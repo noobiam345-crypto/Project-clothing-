@@ -293,6 +293,33 @@
   <div class="splash-line"></div>
 </div>
 
+<!--
+  SPLASH SAFETY SCRIPT — deliberately separate and placed immediately after the
+  splash div, right at the top of the body. This does NOT depend on anything
+  else on the page (fonts, other elements, later scripts). Even if something
+  else later in the page throws an error, this guarantees the splash screen
+  will still go away and the site becomes usable.
+-->
+<script>
+  (function(){
+    var hidden = false;
+    function hideSplash(){
+      if(hidden) return;
+      hidden = true;
+      var s = document.getElementById('splash');
+      if(s) s.classList.add('hide');
+      var items = document.querySelectorAll('.reveal-item');
+      for(var i=0; i<items.length; i++){ items[i].classList.add('in'); }
+    }
+    // Normal timed reveal.
+    setTimeout(hideSplash, 1500);
+    // Extra safety net in case something delays the page — splash will never
+    // stay stuck longer than 4 seconds no matter what.
+    setTimeout(hideSplash, 4000);
+    window.addEventListener('load', function(){ setTimeout(hideSplash, 1600); });
+  })();
+</script>
+
 <header id="siteHeader">
   <div class="brand" onclick="window.scrollTo({top:0,behavior:'smooth'})">LX CLOTHING<span>.</span></div>
   <nav>
@@ -416,4 +443,473 @@
       <button class="btn ghost" style="flex:none; padding:9px 18px;" onclick="logoutAdmin()">Log Out</button>
     </div>
   </div>
-  <div class="admin-bo
+  <div class="admin-body">
+    <div class="admin-tabs">
+      <div class="admin-tab active" data-tab="products" onclick="switchTab('products')">Products</div>
+      <div class="admin-tab" data-tab="admins" onclick="switchTab('admins')">Admins</div>
+      <div class="admin-tab" data-tab="diag" onclick="switchTab('diag')">Diagnostics</div>
+    </div>
+
+    <div class="admin-panel-section active" id="tab-products">
+      <button class="btn primary add-btn" style="flex:none; padding:11px 24px;" onclick="openProductModal()">+ Add Product</button>
+      <div id="productList"></div>
+    </div>
+
+    <div class="admin-panel-section" id="tab-admins">
+      <button class="btn primary add-btn" style="flex:none; padding:11px 24px;" onclick="openOverlay('adminAddOverlay')">+ Add Admin</button>
+      <div id="adminList"></div>
+    </div>
+
+    <div class="admin-panel-section" id="tab-diag">
+      <div style="color:var(--bone-dim); font-size:0.85rem; margin-bottom:1.2rem;">This checks whether your browser can actually save data for this page. Run it after opening the file the way you normally will (downloaded file, or a hosted link).</div>
+      <button class="btn primary add-btn" style="flex:none; padding:11px 24px;" onclick="renderDiagnostics()">Run Check Again</button>
+      <div id="diagOutput"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SEED_ADMIN = { phone: "9372093801", password: "LXClothing#1897" };
+const SEED_PRODUCTS = [
+  { id: "p1", name: "Requiem Trench", category: "Outerwear", price: 6499, image: "", desc: "Structured black wool trench with aged gold hardware." },
+  { id: "p2", name: "Vespers Blazer", category: "Statement", price: 5299, image: "", desc: "Sharp-shouldered blazer with gothic cross lining." },
+  { id: "p3", name: "Nocturne Tee", category: "Essentials", price: 1899, image: "", desc: "Heavyweight cotton tee, foil cross print." },
+  { id: "p4", name: "Ashfall Cargo", category: "Essentials", price: 3199, image: "", desc: "Tapered cargo trousers in charcoal twill." }
+];
+
+// In-memory state is the source of truth for the current session so the app
+// always renders, even if persistent storage is unavailable or full.
+let adminsData = [ { ...SEED_ADMIN } ];
+let productsData = SEED_PRODUCTS.map(p => ({ ...p }));
+let currentAdmin = null;
+let isAdminView = false;
+
+function sGet(key){
+  try{
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e){ return null; }
+}
+
+// sSet now returns true/false so callers can tell whether a save actually
+// stuck, instead of silently pretending it worked (this was the root cause
+// of photos looking saved and then disappearing on refresh).
+function sSet(key, value){
+  try{
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch(e){
+    console.error('LX storage save failed for', key, e);
+    return false;
+  }
+}
+
+function storageBytesUsed(){
+  try{
+    let total = 0;
+    for(let i=0; i<localStorage.length; i++){
+      const k = localStorage.key(i);
+      total += (k.length + (localStorage.getItem(k)||'').length);
+    }
+    return total;
+  } catch(e){ return null; }
+}
+
+async function loadData(){
+  const admins = sGet('lxclothing:admins');
+  if(admins && admins.length) adminsData = admins;
+  const products = sGet('lxclothing:products');
+  if(products) productsData = products;
+  // Save current state back (creates the keys the first time). Failure here
+  // is non-fatal — the site still runs off in-memory data for this session.
+  sSet('lxclothing:admins', adminsData);
+  sSet('lxclothing:products', productsData);
+}
+
+function openOverlay(id){ document.getElementById(id).classList.add('show'); }
+function closeOverlay(id){
+  document.getElementById(id).classList.remove('show');
+  const loginMsg = document.getElementById('loginMsg');
+  if(loginMsg) loginMsg.textContent='';
+}
+
+function renderProducts(){
+  const products = productsData;
+  const grid = document.getElementById('productGrid');
+  grid.innerHTML = '';
+  if(products.length === 0){
+    grid.innerHTML = '<div class="empty-state">No pieces live yet. Check back soon.</div>';
+    return;
+  }
+  products.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'card' + (isAdminView ? ' admin-on' : '');
+    card.innerHTML = `
+      ${p.image ? `<img class="card-img" src="${escapeAttr(p.image)}" alt="${escapeAttr(p.name)}">`
+                 : `<div class="card-img placeholder">${escapeHtml(p.name)}</div>`}
+      <div class="card-body">
+        <div class="card-cat">${escapeHtml(p.category||'Collection')}</div>
+        <div class="card-name">${escapeHtml(p.name)}</div>
+        <div class="card-desc">${escapeHtml(p.desc||'')}</div>
+        <div class="card-foot">
+          <div class="card-price">₹${Number(p.price||0).toLocaleString('en-IN')}</div>
+          <div class="card-edit">
+            <button class="icon-btn" onclick="event.stopPropagation(); openProductModal('${p.id}')">✎</button>
+            <button class="icon-btn" onclick="event.stopPropagation(); deleteProduct('${p.id}')">✕</button>
+          </div>
+        </div>
+      </div>`;
+    card.addEventListener('mousemove', tiltCard);
+    card.addEventListener('mouseleave', resetTilt);
+    const imgEl = card.querySelector('.card-img');
+    if(p.image && imgEl){
+      imgEl.style.cursor = 'zoom-in';
+      imgEl.addEventListener('click', (ev) => { ev.stopPropagation(); openLightbox(p.image); });
+    }
+    grid.appendChild(card);
+  });
+}
+
+function openLightbox(url){
+  document.getElementById('lightboxImg').src = url;
+  openOverlay('lightboxOverlay');
+}
+
+function tiltCard(e){
+  const r = this.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width - 0.5;
+  const y = (e.clientY - r.top) / r.height - 0.5;
+  this.style.transform = `perspective(900px) rotateY(${x*10}deg) rotateX(${-y*10}deg) translateY(-4px)`;
+}
+function resetTilt(){ this.style.transform = 'perspective(900px) rotateY(0) rotateX(0)'; }
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s){ return escapeHtml(s); }
+
+function switchTab(tab){
+  document.querySelectorAll('.admin-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.admin-panel-section').forEach(s => s.classList.toggle('active', s.id === 'tab-'+tab));
+  if(tab === 'diag') renderDiagnostics();
+}
+
+function attemptLogin(){
+  const phone = document.getElementById('loginPhone').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  const match = adminsData.find(a => a.phone === phone && a.password === pass);
+  const msg = document.getElementById('loginMsg');
+  if(match){
+    currentAdmin = match;
+    msg.textContent = '';
+    closeOverlay('loginOverlay');
+    document.getElementById('loginPhone').value=''; document.getElementById('loginPass').value='';
+    openAdminPanel();
+  } else {
+    msg.textContent = 'Incorrect phone number or password.';
+  }
+}
+
+function openAdminPanel(){
+  isAdminView = true;
+  document.getElementById('adminPanel').classList.add('show');
+  renderAdminProductList();
+  renderAdminList();
+  renderProducts();
+}
+function closeAdminPanel(){
+  isAdminView = false;
+  document.getElementById('adminPanel').classList.remove('show');
+  renderProducts();
+}
+function logoutAdmin(){
+  currentAdmin = null;
+  closeAdminPanel();
+}
+
+// ---------- DIAGNOSTICS ----------
+function runDiagnostics(){
+  const rows = [];
+  rows.push(['Page address', window.location.href]);
+  rows.push(['Protocol', window.location.protocol + (window.location.protocol === 'file:' ? '  (opened as a local file — many mobile browsers do NOT save data reliably for local files)' : '  (real hosted address — storage should work normally)')]);
+
+  let lsWorks = false, lsError = '';
+  try{
+    const k = '__lx_diag__';
+    localStorage.setItem(k, 'test-' + Date.now());
+    lsWorks = localStorage.getItem(k) !== null;
+    localStorage.removeItem(k);
+  } catch(e){ lsError = (e && e.message) ? e.message : String(e); }
+  rows.push(['Can this browser save data here?', lsWorks ? 'YES ✓' : 'NO ✗' + (lsError ? ' — ' + lsError : '')]);
+
+  try{
+    const admins = localStorage.getItem('lxclothing:admins');
+    const products = localStorage.getItem('lxclothing:products');
+    rows.push(['Admins currently saved', admins ? JSON.parse(admins).length : 0]);
+    rows.push(['Products currently saved', products ? JSON.parse(products).length : 0]);
+  } catch(e){
+    rows.push(['Saved data check', 'Could not read: ' + e.message]);
+  }
+
+  const used = storageBytesUsed();
+  if(used !== null){
+    rows.push(['Storage currently used', (used/1024).toFixed(1) + ' KB (most browsers allow roughly 5,000–10,000 KB on this page)']);
+  }
+
+  rows.push(['Currently loaded in memory', productsData.length + ' products, ' + adminsData.length + ' admin(s)']);
+  return rows;
+}
+
+function renderDiagnostics(){
+  const rows = runDiagnostics();
+  const box = document.getElementById('diagOutput');
+  if(!box) return;
+  box.innerHTML = rows.map(([label, val]) => `
+    <div style="padding:0.8rem 0; border-bottom:1px solid var(--line);">
+      <div style="font-size:0.68rem; letter-spacing:0.15em; color:var(--gold); text-transform:uppercase;">${escapeHtml(label)}</div>
+      <div style="font-size:0.9rem; color:var(--bone); margin-top:0.3rem; word-break:break-word;">${escapeHtml(String(val))}</div>
+    </div>`).join('');
+}
+
+// ---------- PRODUCT CRUD ----------
+function renderAdminProductList(){
+  const products = productsData;
+  const list = document.getElementById('productList');
+  list.innerHTML = products.map(p => `
+    <div class="product-row">
+      ${p.image ? `<img src="${escapeAttr(p.image)}" data-zoom="1" style="cursor:zoom-in;">` : `<div class="ph">IMG</div>`}
+      <div><strong>${escapeHtml(p.name)}</strong><br><span style="color:var(--bone-dim); font-size:0.78rem;">${escapeHtml(p.category||'')}</span></div>
+      <div>₹${Number(p.price||0).toLocaleString('en-IN')}</div>
+      <div style="display:flex; gap:6px;">
+        <button class="icon-btn" onclick="openProductModal('${p.id}')">✎</button>
+        <button class="icon-btn" onclick="deleteProduct('${p.id}')">✕</button>
+      </div>
+    </div>`).join('') || '<div style="color:var(--bone-dim); padding:1rem 0;">No products yet.</div>';
+  list.querySelectorAll('img[data-zoom]').forEach(img => img.addEventListener('click', () => openLightbox(img.src)));
+}
+
+function openProductModal(id){
+  document.getElementById('productMsg').textContent = '';
+  document.getElementById('productMsg').className = 'msg';
+  document.getElementById('pImageFile').value = '';
+  if(id){
+    const p = productsData.find(x => x.id === id);
+    document.getElementById('productModalTitle').textContent = 'Edit Product';
+    document.getElementById('editProductId').value = id;
+    document.getElementById('pName').value = p.name;
+    document.getElementById('pCategory').value = p.category || '';
+    document.getElementById('pPrice').value = p.price || '';
+    document.getElementById('pImage').value = p.image || '';
+    document.getElementById('pDesc').value = p.desc || '';
+    setImagePreview(p.image || '');
+  } else {
+    document.getElementById('productModalTitle').textContent = 'Add Product';
+    document.getElementById('editProductId').value = '';
+    ['pName','pCategory','pPrice','pImage','pDesc'].forEach(id => document.getElementById(id).value = '');
+    setImagePreview('');
+  }
+  openOverlay('productOverlay');
+}
+
+// KEY FIX: we now try to persist BEFORE we tell the admin it worked or close
+// the modal. If storage is full, the admin sees a clear warning right away
+// (instead of the modal closing, looking successful, then the photo quietly
+// disappearing on the next refresh) and the in-memory list is not corrupted
+// with an unsaved change.
+function saveProduct(){
+  const name = document.getElementById('pName').value.trim();
+  const msg = document.getElementById('productMsg');
+  if(!name){ msg.className='msg err'; msg.textContent = 'Name is required.'; return; }
+  const id = document.getElementById('editProductId').value;
+  const data = {
+    name,
+    category: document.getElementById('pCategory').value.trim(),
+    price: parseFloat(document.getElementById('pPrice').value) || 0,
+    image: document.getElementById('pImage').value.trim(),
+    desc: document.getElementById('pDesc').value.trim()
+  };
+
+  let updatedList;
+  if(id){
+    updatedList = productsData.map(p => p.id === id ? { ...p, ...data } : p);
+  } else {
+    data.id = 'p' + Date.now();
+    updatedList = [...productsData, data];
+  }
+
+  const saved = sSet('lxclothing:products', updatedList);
+  if(!saved){
+    msg.className = 'msg err';
+    msg.textContent = 'Storage is full — this photo could not be saved permanently. Try a different (smaller) photo, or delete an old product first, then save again.';
+    return;
+  }
+
+  productsData = updatedList;
+  closeOverlay('productOverlay');
+  renderAdminProductList();
+  renderProducts();
+}
+
+function deleteProduct(id){
+  const updatedList = productsData.filter(p => p.id !== id);
+  sSet('lxclothing:products', updatedList);
+  productsData = updatedList;
+  renderAdminProductList();
+  renderProducts();
+}
+
+// ---------- ADMIN MANAGEMENT ----------
+function renderAdminList(){
+  const admins = adminsData;
+  const list = document.getElementById('adminList');
+  list.innerHTML = admins.map(a => `
+    <div class="admin-list-item">
+      <span>${escapeHtml(a.phone)}</span>
+      ${admins.length > 1 ? `<button class="icon-btn" onclick="removeAdmin('${a.phone}')">✕</button>` : '<span style="color:var(--bone-dim); font-size:0.75rem;">Primary</span>'}
+    </div>`).join('');
+}
+
+function addAdmin(){
+  const phone = document.getElementById('newAdminPhone').value.trim();
+  const pass = document.getElementById('newAdminPass').value;
+  const msg = document.getElementById('adminAddMsg');
+  if(!/^\d{10}$/.test(phone)){ msg.className='msg err'; msg.textContent = 'Enter a valid 10-digit phone number.'; return; }
+  if(!pass || pass.length < 4){ msg.className='msg err'; msg.textContent = 'Password must be at least 4 characters.'; return; }
+  if(adminsData.find(a => a.phone === phone)){ msg.className='msg err'; msg.textContent = 'This number is already an admin.'; return; }
+  const updatedList = [...adminsData, { phone, password: pass }];
+  const saved = sSet('lxclothing:admins', updatedList);
+  if(!saved){
+    msg.className='msg err'; msg.textContent = 'Could not save this admin permanently (storage full). It will be lost on refresh.';
+    return;
+  }
+  adminsData = updatedList;
+  document.getElementById('newAdminPhone').value=''; document.getElementById('newAdminPass').value='';
+  msg.className='msg ok'; msg.textContent = 'Admin added.';
+  renderAdminList();
+}
+
+function removeAdmin(phone){
+  const updatedList = adminsData.filter(a => a.phone !== phone);
+  sSet('lxclothing:admins', updatedList);
+  adminsData = updatedList;
+  renderAdminList();
+}
+
+// ---------- IMAGE UPLOAD ----------
+// Compresses to a smaller max dimension and iteratively lowers JPEG quality
+// until the encoded photo is comfortably small. This is the main fix for
+// "photo saves then vanishes on refresh": large, high-resolution photos were
+// filling up the browser's storage limit, causing the save to silently fail.
+function compressImage(file, maxDim, quality){
+  maxDim = maxDim || 800; quality = quality || 0.78;
+  const MAX_BYTES = 320000; // ~320KB per photo — keeps many products safely within storage limits
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if(width > height && width > maxDim){ height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else if(height > maxDim){ width = Math.round(width * (maxDim / height)); height = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+        let q = quality;
+        let dataUrl = canvas.toDataURL('image/jpeg', q);
+        let tries = 0;
+        while(dataUrl.length * 0.75 > MAX_BYTES && tries < 6){
+          q = Math.max(0.35, q - 0.12);
+          dataUrl = canvas.toDataURL('image/jpeg', q);
+          tries++;
+        }
+        resolve(dataUrl);
+      };
+      img.onerror = () => reject(new Error('bad image'));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function setImagePreview(dataUrl){
+  const preview = document.getElementById('pImagePreview');
+  preview.innerHTML = dataUrl ? `<img src="${dataUrl}" alt="Preview">` : '';
+}
+
+// ---------- APP STARTUP ----------
+// Everything that touches the DOM is wrapped in try/catch so that if one
+// piece fails (a missing element, a browser quirk), the rest of the site
+// still initializes instead of the whole page silently breaking.
+(function bindEvents(){
+  try{
+    document.getElementById('adminBtn').addEventListener('click', () => {
+      if(currentAdmin){ openAdminPanel(); } else { openOverlay('loginOverlay'); }
+    });
+  } catch(e){ console.error('LX: adminBtn bind failed', e); }
+
+  try{
+    document.addEventListener('mousemove', e => {
+      const x = (e.clientX / window.innerWidth - 0.5) * 20;
+      const y = (e.clientY / window.innerHeight - 0.5) * 14;
+      const inner = document.getElementById('heroInner');
+      if(inner) inner.style.transform = `rotateY(${x}deg) rotateX(${-y}deg)`;
+      const cross = document.getElementById('heroCross');
+      if(cross) cross.style.transform = `translateX(${x*1.5}px)`;
+    });
+  } catch(e){ console.error('LX: parallax bind failed', e); }
+
+  try{
+    document.getElementById('pImageFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      const msg = document.getElementById('productMsg');
+      if(!file) return;
+      if(!file.type.startsWith('image/')){
+        msg.className = 'msg err'; msg.textContent = 'Please choose an image file.';
+        return;
+      }
+      try{
+        msg.className = 'msg'; msg.textContent = 'Processing photo…';
+        const dataUrl = await compressImage(file);
+        document.getElementById('pImage').value = dataUrl;
+        setImagePreview(dataUrl);
+        const kb = Math.round(dataUrl.length * 0.75 / 1024);
+        msg.className = 'msg ok'; msg.textContent = `Photo ready (~${kb} KB). Click Save to keep it.`;
+      } catch(err){
+        msg.className = 'msg err'; msg.textContent = 'Could not read that photo — try another file.';
+      }
+    });
+  } catch(e){ console.error('LX: image input bind failed', e); }
+})();
+
+function spawnEmbers(){
+  const field = document.getElementById('emberField');
+  if(!field) return;
+  const count = 14;
+  for(let i = 0; i < count; i++){
+    const e = document.createElement('div');
+    e.className = 'ember';
+    const left = Math.random() * 100;
+    const delay = Math.random() * 6;
+    const duration = 5 + Math.random() * 5;
+    const drift = (Math.random() * 60 - 30) + 'px';
+    e.style.left = left + '%';
+    e.style.animationDelay = delay + 's';
+    e.style.animationDuration = duration + 's';
+    e.style.setProperty('--drift', drift);
+    field.appendChild(e);
+  }
+}
+
+(async function init(){
+  try{
+    spawnEmbers();
+    await loadData();
+    renderProducts();
+  } catch(e){
+    console.error('LX init error:', e);
+    try{ renderProducts(); } catch(_){}
+  }
+})();
+</script>
+</body>
+</html>
